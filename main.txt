@@ -10,8 +10,8 @@ import json
 # ==============================================================================
 GITHUB_API_URL = 'https://api.github.com'
 TOKEN_FILE = 'token.txt'
-TOTAL_REPOS_TO_CREATE = 2
-INSTANCES_PER_REPO = 5
+TOTAL_REPOS_TO_CREATE = 1
+INSTANCES_PER_REPO = 3
 
 class BColors:
     """Class for terminal colors."""
@@ -357,4 +357,5 @@ def main():
         log(f"A critical error stopped the process: {e}", BColors.FAIL)
 
 if __name__ == '__main__':
+
     main()
