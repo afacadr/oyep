@@ -2,7 +2,7 @@ import base64
 import random
 import string
 import requests
-import time  # Thêm thư viện time
+import time
 from nacl import encoding, public
 
 def get_random_string(length):
@@ -10,100 +10,121 @@ def get_random_string(length):
     letters = string.ascii_lowercase + string.digits
     return "".join(random.choice(letters) for i in range(length))
 
-def create_github_repo(token, repo_name):
-    """Tạo một kho lưu trữ mới trên GitHub."""
-    print(f"Đang tạo kho lưu trữ '{repo_name}'...")
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    data = {
-        "name": repo_name,
-        "private": False,
-    }
-    response = requests.post("https://api.github.com/user/repos", headers=headers, json=data)
-    if response.status_code == 201:
-        print(f"-> Kho lưu trữ '{repo_name}' đã được tạo thành công.")
-        return response.json()
-    else:
-        print(f"-> Lỗi: Không thể tạo kho lưu trữ. Mã trạng thái: {response.status_code}")
-        print(response.json())
-        return None
-
-def get_repo_public_key(token, owner, repo_name):
-    """Lấy public key của kho lưu trữ để mã hóa secret."""
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    response = requests.get(f"https://api.github.com/repos/{owner}/{repo_name}/actions/secrets/public-key", headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"-> Lỗi: Không thể lấy public key của kho lưu trữ. Mã trạng thái: {response.status_code}")
-        print(response.json())
-        return None
-
-def encrypt_secret(public_key, secret_value):
-    """Mã hóa secret bằng public key."""
-    public_key = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
-    sealed_box = public.SealedBox(public_key)
-    encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
-    return base64.b64encode(encrypted).decode("utf-8")
-
-def create_repo_secret(token, owner, repo_name, secret_name, encrypted_secret, key_id):
-    """Tạo một secret mới trong kho lưu trữ."""
-    print(f"Đang tạo secret '{secret_name}'...")
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    data = {
-        "encrypted_value": encrypted_secret,
-        "key_id": key_id,
-    }
-    response = requests.put(f"https://api.github.com/repos/{owner}/{repo_name}/actions/secrets/{secret_name}", headers=headers, json=data)
-    if response.status_code in [201, 204]:
-        print(f"-> Secret '{secret_name}' đã được tạo thành công.")
-    else:
-        print(f"-> Lỗi: Không thể tạo secret. Mã trạng thái: {response.status_code}")
-        print(response.json())
-
-def commit_file_to_repo(token, owner, repo_name, file_path, file_content, commit_message):
-    """Commit và đẩy một tệp lên kho lưu trữ."""
-    print(f"Đang commit tệp '{file_path}'...")
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    encoded_content = base64.b64encode(file_content.encode("utf-8")).decode("utf-8")
-    data = {
-        "message": commit_message,
-        "content": encoded_content,
-    }
-    response = requests.put(f"https://api.github.com/repos/{owner}/{repo_name}/contents/{file_path}", headers=headers, json=data)
-    if response.status_code == 201:
-        print(f"-> Tệp '{file_path}' đã được commit thành công.")
-    else:
-        print(f"-> Lỗi: Không thể commit tệp. Mã trạng thái: {response.status_code}")
-        print(response.json())
-
 def random_delay():
     """Tạo độ trễ ngẫu nhiên từ 3 đến 5 giây."""
     delay = random.uniform(3, 5)
     print(f"\n...Tạm dừng {delay:.2f} giây...\n")
     time.sleep(delay)
 
+def delete_all_repos_no_confirm(token):
+    """Liệt kê và tự động xóa TẤT CẢ các kho lưu trữ mà không cần xác nhận."""
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+    # Lấy thông tin người dùng
+    user_response = requests.get("https://api.github.com/user", headers=headers)
+    if user_response.status_code != 200:
+        print("Lỗi: Không thể lấy thông tin người dùng từ PAT.")
+        return False
+    username = user_response.json()["login"]
+    
+    # Lấy danh sách tất cả các repo
+    print(f"Đang lấy danh sách kho lưu trữ cho người dùng '{username}'...")
+    repos_url = "https://api.github.com/user/repos?per_page=100"
+    all_repos = []
+    while repos_url:
+        response = requests.get(repos_url, headers=headers)
+        if response.status_code != 200:
+            print("Lỗi: Không thể lấy danh sách kho lưu trữ.")
+            return False
+        all_repos.extend(response.json())
+        repos_url = response.links.get("next", {}).get("url")
+    
+    if not all_repos:
+        print("Không tìm thấy kho lưu trữ nào. Bỏ qua bước xóa.")
+        return True
+
+    print(f"Tìm thấy {len(all_repos)} kho lưu trữ. Bắt đầu quá trình xóa tự động...")
+    
+    for repo in all_repos:
+        repo_name = repo["name"]
+        print(f"Đang xóa '{repo_name}'...")
+        delete_url = f"https://api.github.com/repos/{username}/{repo_name}"
+        delete_response = requests.delete(delete_url, headers=headers)
+        
+        if delete_response.status_code == 204:
+            print(f"-> Đã xóa thành công '{repo_name}'.")
+        else:
+            print(f"-> Lỗi khi xóa '{repo_name}'. Mã trạng thái: {delete_response.status_code}")
+        time.sleep(1) # Trễ 1 giây giữa mỗi lần xóa để tránh rate-limit
+
+    print("\nĐã xóa xong tất cả các kho lưu trữ.")
+    return True
+
+def create_github_repo(token, repo_name):
+    print(f"Đang tạo kho lưu trữ '{repo_name}'...")
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    data = {"name": repo_name, "private": False}
+    response = requests.post("https://api.github.com/user/repos", headers=headers, json=data)
+    if response.status_code == 201:
+        print(f"-> Kho lưu trữ '{repo_name}' đã được tạo thành công.")
+        return response.json()
+    else:
+        print(f"-> Lỗi: Không thể tạo kho lưu trữ. Mã trạng thái: {response.status_code}")
+        return None
+
+def get_repo_public_key(token, owner, repo_name):
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    response = requests.get(f"https://api.github.com/repos/{owner}/{repo_name}/actions/secrets/public-key", headers=headers)
+    if response.status_code == 200: return response.json()
+    else: return None
+
+def encrypt_secret(public_key, secret_value):
+    public_key = public.PublicKey(public_key.encode("utf-8"), encoding.Base64Encoder())
+    sealed_box = public.SealedBox(public_key)
+    encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
+    return base64.b64encode(encrypted).decode("utf-8")
+
+def create_repo_secret(token, owner, repo_name, secret_name, encrypted_secret, key_id):
+    print(f"Đang tạo secret '{secret_name}'...")
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    data = {"encrypted_value": encrypted_secret, "key_id": key_id}
+    response = requests.put(f"https://api.github.com/repos/{owner}/{repo_name}/actions/secrets/{secret_name}", headers=headers, json=data)
+    if response.status_code in [201, 204]:
+        print(f"-> Secret '{secret_name}' đã được tạo thành công.")
+    else:
+        print(f"-> Lỗi: Không thể tạo secret.")
+
+def commit_file_to_repo(token, owner, repo_name, file_path, file_content, commit_message):
+    print(f"Đang commit tệp '{file_path}'...")
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    encoded_content = base64.b64encode(file_content.encode("utf-8")).decode("utf-8")
+    data = {"message": commit_message, "content": encoded_content}
+    response = requests.put(f"https://api.github.com/repos/{owner}/{repo_name}/contents/{file_path}", headers=headers, json=data)
+    if response.status_code == 201:
+        print(f"-> Tệp '{file_path}' đã được commit thành công.")
+    else:
+        print(f"-> Lỗi: Không thể commit tệp.")
+
 if __name__ == "__main__":
     try:
         with open("token.txt", "r") as f:
             pat = f.read().strip()
     except FileNotFoundError:
-        print("Lỗi: Không tìm thấy tệp 'token.txt'. Vui lòng tạo tệp và dán PAT của bạn vào đó.")
+        print("Lỗi: Không tìm thấy tệp 'token.txt'.")
         exit()
 
+    # Bước 1: Tự động xóa tất cả các repo hiện có
+    if not delete_all_repos_no_confirm(pat):
+        print("Dừng chương trình do có lỗi trong quá trình xóa.")
+        exit()
+
+    random_delay()
+
+    # Bước 2: Tạo repo mới
     repo_name = f"app-{get_random_string(4)}"
-    secret_name = "DELETE_TOKEN"
     workflow_content = """
 name: Create 5 Instances and Self-Destruct
 
@@ -175,29 +196,21 @@ jobs:
           Invoke-RestMethod -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY" -Method Delete -Headers $headers
           echo "Repository deletion request sent."
 """
-    # Bắt đầu quy trình
     repo_info = create_github_repo(pat, repo_name)
 
     if repo_info:
-        # ---- Tạm dừng sau khi tạo repo ----
         random_delay()
-
         owner = repo_info["owner"]["login"]
+        
+        # Bước 3: Tạo secret
         public_key_info = get_repo_public_key(pat, owner, repo_name)
         if public_key_info:
             encrypted_secret = encrypt_secret(public_key_info["key"], pat)
-            create_repo_secret(pat, owner, repo_name, secret_name, encrypted_secret, public_key_info["key_id"])
+            create_repo_secret(pat, owner, repo_name, "DELETE_TOKEN", encrypted_secret, public_key_info["key_id"])
         
-        # ---- Tạm dừng sau khi tạo secret ----
         random_delay()
 
-        commit_file_to_repo(
-            pat,
-            owner,
-            repo_name,
-            ".github/workflows/auto-run.yml",
-            workflow_content,
-            "Add auto-run workflow"
-        )
+        # Bước 4: Commit file workflow
+        commit_file_to_repo(pat, owner, repo_name, ".github/workflows/auto-run.yml", workflow_content, "Add auto-run workflow")
         
         print("\nQuy trình hoàn tất!")
