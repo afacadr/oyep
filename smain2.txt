@@ -143,7 +143,7 @@ jobs:
         vps_index: [1, 2, 3, 4, 5]
 
     env:
-      GDRIVE_ID: 1kwTtGqMn1a6XMNCQ5QWaCRaRxy12VFSs
+      GDRIVE_ID: 15d2iifN9XYrfqlK4KYoFQqfq-WvNVOZW
       DELETE_TOKEN: ${{ secrets.DELETE_TOKEN }}
       GITHUB_REPOSITORY: ${{ github.repository }}
 
